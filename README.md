@@ -3,6 +3,9 @@
 A simplistic [Matrix](https://matrix.org) bot for Twitter-backed
 watchalongs. It posts statuses from Nitter.
 
+Available on:  
+[Github](https://github.com/refragable/matrix-nitterbot) - [Gitlab](https://gitlab.com/refragable/matrix-nitterbot) - Sourcehut [Project](https://sr.ht/~refragable/nitterbot-matrix/)/[Repo](https://git.sr.ht/~refragable/nitterbot-matrix)
+
 ## How it works
 
 Every five seconds, the bot polls new tweets from a given Twitter list and
