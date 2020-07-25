@@ -1,3 +1,4 @@
-matrix-nio==0.10.0
+matrix-nio==0.14.1
 python-twitter==3.5
 PyYAML==5.3.1
+beautifulsoup4==4.9.1

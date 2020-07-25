@@ -1,3 +1,18 @@
+#   Copyright 2020 Brendan Abolivier <github@brendanabolivier.com>
+#   Copyright 2020 A Mak <refragable@mailbox.org>
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
+
 import asyncio
 import datetime
 import time
@@ -6,6 +21,29 @@ import typing
 import nio
 import twitter
 import yaml
+
+import requests
+from bs4 import BeautifulSoup
+
+# "Easier way to enable verbose logging"
+# https://stackoverflow.com/a/20663028
+# keep this block disabled unless needed for development purposes
+#import argparse
+#import logging
+#parser = argparse.ArgumentParser()
+#parser.add_argument(
+#    '-d', '--debug',
+#    help="Print lots of debugging statements",
+#    action="store_const", dest="loglevel", const=logging.DEBUG,
+#    default=logging.WARNING,
+#)
+#parser.add_argument(
+#    '-v', '--verbose',
+#    help="Be verbose",
+#    action="store_const", dest="loglevel", const=logging.INFO,
+#)
+#args = parser.parse_args()    
+#logging.basicConfig(level=args.loglevel)
 
 with open("config.yaml", "rb") as fp:
     config = yaml.safe_load(fp.read())
@@ -34,6 +72,7 @@ def init_twitter():
         )
         # Attempt to extract the tweet ID to start looking from.
         since_id = timeline[0].id if len(timeline) else None
+        #log("Initial Timeline loaded")
         return cli, since_id
     except twitter.TwitterError as e:
         # We want to catch the "unknown list" error, which error code is 34 according to
@@ -78,16 +117,83 @@ async def init_matrix():
     return cli
 
 
+def replace_nitter_href(href):
+    return href.replace('href="/', 'href="https://nitter.net/')
+
+
+def parse_nitter_text(tweet):
+    url = "https://nitter.net/{screen_name}/status/{id}".format(
+        screen_name=tweet.user.screen_name, id=tweet.id,
+    )
+    #log("Attempting to parse status: %s" % url)
+    page = requests.get(url)
+    page.encoding = 'utf-8'
+
+    soup = BeautifulSoup(page.text, "html.parser")
+    soup.select_one("p.tweet-published").decompose()
+    inner_html = soup.select_one("div#m.main-tweet > div.timeline-item > div.tweet-body")
+    inner_html.select_one("div.tweet-header").decompose()
+    inner_html.select_one("div.tweet-stats").decompose()
+    # handle link cards
+    try:
+        card = inner_html.select_one("div.card")
+    except AttributeError:
+        card = None
+    else:
+        if card is not None:
+            inner_html.select_one("div.card").decompose()
+            #log("Decomposed card for %s" % url)
+    # remove some extraneous information from quoted tweets
+    try:
+        quote = inner_html.select_one("div.quote-big")
+    except AttributeError:
+        quote = None
+    else:
+        if quote is not None:
+            inner_html.select_one("img.mini.avatar").decompose()
+            inner_html.select_one("a.fullname").decompose()
+            inner_html.select_one("span.tweet-date").decompose()
+            QuoteTag1 = soup.new_tag("i")
+            QuoteTag1.string = "Quoted Tweet as follows:"
+            inner_html.select_one("a.quote-link").append(QuoteTag1)
+            QuoteTag2 = soup.new_tag("i")
+            QuoteTag2.string = "Original Status Link:"
+            inner_html.select_one("div.tweet-body").append(QuoteTag2)
+            #log("Decomposed quote elements for %s" % url)
+    # notify users that there are attachments
+    # https://www.crummy.com/software/BeautifulSoup/bs4/doc/#append
+    # uses extract() to avoid need for decompose()
+    try:
+        attachment = inner_html.select_one("div.attachments").extract()
+    except AttributeError:
+        attachment = None
+    else:
+        if attachment is not None:
+            AttachmentTag = soup.new_tag("i")
+            AttachmentTag.string = "Tweet attachment(s) found, click on the Nitter link below to view."
+            inner_html.append(AttachmentTag)
+            #log("Decomposed attachment div for %s" % url)
+
+    html = replace_nitter_href(str(inner_html))
+
+    return html
+
+
 def build_event_content(tweet):
     # Build the tweet's URL, which incorporates the following format:
     # https://twitter.com/user/status/0123456789
-    url = "https://twitter.com/{screen_name}/status/{id}".format(
+    # nitter URLs look like:
+    # https://nitter.net/user/status/0123456789
+    url = "https://nitter.net/{screen_name}/status/{id}".format(
         screen_name=tweet.user.screen_name, id=tweet.id,
     )
 
     # Build a basic body of the message.
     raw_body = '{user_name}: {text} - {url}'.format(
-        user_name=tweet.user.name, text=tweet.full_text, url=url,
+        user_name=tweet.user.name,
+        #text=parse_nitter_text(tweet),
+        text=tweet.full_text,
+        url=url,
     )
     content = {"msgtype": "m.notice", "body": raw_body}
 
@@ -97,7 +203,8 @@ def build_event_content(tweet):
         formatted_body = notice_template.format(
             user_name=tweet.user.name,
             screen_name=tweet.user.screen_name,
-            text=tweet.full_text.replace("\n", "<br/>"),
+            #text=tweet.full_text.replace("\n", "<br/>"),
+            text=parse_nitter_text(tweet),
             url=url,
         )
 
@@ -138,7 +245,7 @@ async def loop():
         # here is a simple and easy way of avoiding getting rate-limited. It means
         # we're not getting the tweets as soon as possible because the request will
         # take more than 0ms, but we don't really care being a few ms behind.
-        time.sleep(1)
+        time.sleep(5) # changed from 1 to 5 in order to use multiple bots.
 
         # Get the latest tweets in the list. If an error happened, loop over it.
         try:
@@ -146,6 +253,7 @@ async def loop():
                 slug=slug,
                 owner_screen_name=screen_name,
                 since_id=since_id,
+                include_rts=0, # exclude retweets. Comment line to enable retweets
             )
         except twitter.TwitterError as e:
             log("Twitter API returned an error: %s" % e.message)
