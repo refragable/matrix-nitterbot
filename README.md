@@ -69,6 +69,7 @@ WorkingDirectory=/home/user/nitterbot/
 ExecStart=/home/user/nitterbot/start.sh
 Restart=always
 RestartSec=5
+RuntimeMaxSec=604800
 [Install]
 WantedBy=multi-user.target
 ```
